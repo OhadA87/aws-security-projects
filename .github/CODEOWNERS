@@ -1,0 +1,24 @@
+# Global owners
+* @security-team @platform-team
+
+# Domain-specific ownership
+/Domain4-Identity_and_Access_Management/ @iam-team @security-team
+/Domain5-Data_Protection/ @data-team @security-team
+/Domain6-Infrastructure_Security/ @infra-team @security-team
+
+# Infrastructure and CI/CD
+/.github/ @platform-team @devops-team
+/terraform/ @infra-team @platform-team
+/cloudformation/ @infra-team @platform-team
+
+# Documentation
+/docs/ @tech-writers @security-team
+/README.md @tech-writers
+/SECURITY.md @security-team
+
+# Security-sensitive files
+/secrets/ @security-team
+/**/*.env @security-team @platform-team
+/**/*.key @security-team
+/**/*.pem @security-team
+/**/security-*.yml @security-team

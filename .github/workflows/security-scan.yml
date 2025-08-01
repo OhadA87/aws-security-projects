@@ -1,0 +1,122 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [ main, develop, 'feature/**', 'hotfix/**' ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday 2 AM
+
+jobs:
+  security-scan:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    # Checkov - Infrastructure as Code Security
+    - name: Run Checkov
+      id: checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: .
+        framework: terraform,cloudformation,kubernetes,dockerfile,secrets
+        output_format: sarif
+        output_file_path: reports/checkov.sarif
+        skip_check: CKV_AWS_18,CKV_AWS_21  # Skip S3 logging for cost optimization
+
+    # Semgrep - SAST
+    - name: Run Semgrep
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: auto
+        output: reports/semgrep.sarif
+        sarif_file: reports/semgrep.sarif
+      env:
+        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+    # Snyk - Dependency and container scanning
+    - name: Run Snyk Security
+      uses: snyk/actions/setup@master
+    - name: Snyk Code test
+      run: snyk code test --sarif > reports/snyk-code.sarif
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      continue-on-error: true
+
+    - name: Snyk Open Source test
+      run: snyk test --sarif > reports/snyk-oss.sarif
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      continue-on-error: true
+
+    # Upload SARIF results
+    - name: Upload Checkov SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: reports/checkov.sarif
+        category: checkov
+
+    - name: Upload Semgrep SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: reports/semgrep.sarif
+        category: semgrep
+
+    - name: Upload Snyk Code SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: reports/snyk-code.sarif
+        category: snyk-code
+
+    - name: Upload Snyk OSS SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: reports/snyk-oss.sarif
+        category: snyk-oss
+
+    # Security gate - fail if high/critical issues found
+    - name: Security Gate
+      run: |
+        echo "Checking for critical security issues..."
+        HIGH_ISSUES=$(cat reports/*.sarif | jq -r '.runs[].results[] | select(.level == "error" or .properties.severity == "HIGH" or .properties.severity == "CRITICAL") | .ruleId' | wc -l)
+        if [ "$HIGH_ISSUES" -gt 0 ]; then
+          echo "❌ Found $HIGH_ISSUES high/critical security issues"
+          echo "Please review and fix security issues before merging"
+          exit 1
+        else
+          echo "✅ No critical security issues found"
+        fi
+
+    # Store security reports as artifacts
+    - name: Store security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: reports/
+        retention-days: 30
