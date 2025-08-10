@@ -1,0 +1,94 @@
+
+pipeline {
+  agent any
+  environment {
+    AWS_REGION   = 'eu-west-1'
+    PROJECT_DIR  = 'projects/aws-pki-certificate-lifecycle-automation'
+    # In Jenkins: create a "Secret text" credential that stores the Role ARN, id = aws-oidc-role-arn
+  }
+  options { timestamps() }
+
+  stages {
+    stage('Init') {
+      steps {
+        sh 'openssl version || true'
+        sh 'terraform -version || true'
+        sh 'bash --version || true'
+      }
+    }
+
+    stage('Terraform Validate') {
+      steps {
+        dir("${env.PROJECT_DIR}/terraform") {
+          sh 'terraform init -input=false'
+          sh 'terraform validate'
+        }
+      }
+    }
+
+    stage('Issue/Renew Certificate') {
+      steps {
+        dir("${env.PROJECT_DIR}/scripts") {
+          sh 'bash openssl_issue.sh'
+        }
+      }
+    }
+
+    stage('Security Gate: Chain Validation') {
+      steps {
+        dir("${env.PROJECT_DIR}/validation") {
+          sh 'bash verify_chain.sh ../artifacts/server.crt ../artifacts/intermediate.crt ../artifacts/root.crt'
+        }
+      }
+    }
+
+    stage('Package for Targets') {
+      environment { PFX_PASSWORD = credentials('pfx-password') } // Jenkins secret text
+      steps {
+        dir("${env.PROJECT_DIR}/scripts") {
+          sh 'bash package_pfx.sh'              // builds artifacts/server.pfx
+          sh 'bash package_acm_bundle.sh'       // builds artifacts/acm_*.pem
+        }
+      }
+    }
+
+    stage('Deploy: ACM + ALB Rotate') {
+      environment {
+        AWS_ROLE_ARN   = credentials('aws-oidc-role-arn')
+        ALB_LISTENER_ARN = credentials('alb-listener-arn') // store as Jenkins secret text
+        TARGET_GROUP_ARN = credentials('alb-target-group-arn') // optional if you want to pass it
+      }
+      steps {
+        withAWS(role: "${env.AWS_ROLE_ARN}", roleSessionName: 'jenkins-ssl-rotate', region: "${env.AWS_REGION}") {
+          dir("${env.PROJECT_DIR}/scripts") {
+            sh 'bash deploy_acm_alb.sh'
+          }
+        }
+      }
+    }
+
+    stage('Post-Deploy Verification') {
+      steps {
+        dir("${env.PROJECT_DIR}/validation") {
+          // Replace with your DNS name later
+          sh 'bash endpoint_testssl.sh https://CHANGE_ME_DNS'
+        }
+      }
+    }
+
+    stage('Governance: Prowler → (optional) Security Hub') {
+      environment { AWS_ROLE_ARN = credentials('aws-oidc-role-arn') }
+      steps {
+        withAWS(role: "${env.AWS_ROLE_ARN}", roleSessionName: 'jenkins-prowler', region: "${env.AWS_REGION}") {
+          dir("${env.PROJECT_DIR}/prowler") { sh 'bash prowler_scan.sh' }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: "${env.PROJECT_DIR}/artifacts/**", allowEmptyArchive: true
+    }
+  }
+}

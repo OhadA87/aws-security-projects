@@ -1,0 +1,9 @@
+**/.terraform/
+**/*.tfstate*
+**/*.key
+**/*.pfx
+**/*.pem
+projects/aws-pki-certificate-lifecycle-automation/artifacts/
+.DS_Store
+.vscode/
+.idea/
